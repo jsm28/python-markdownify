@@ -48,17 +48,17 @@ def abstract_inline_conversion(markup_fn):
     references to self.strong_em_symbol etc.
     """
     def implementation(self, el, text, convert_as_inline):
-        markup = markup_fn(self)
-        if markup.startswith('<') and markup.endswith('>'):
-            markup_after = '</' + markup[1:]
+        markup_prefix = markup_fn(self)
+        if markup_prefix.startswith('<') and markup_prefix.endswith('>'):
+            markup_suffix = '</' + markup_prefix[1:]
         else:
-            markup_after = markup
+            markup_suffix = markup_prefix
         if el.find_parent(['pre', 'code', 'kbd', 'samp']):
             return text
         prefix, suffix, text = chomp(text)
         if not text:
             return ''
-        return '%s%s%s%s%s' % (prefix, markup, text, markup_after, suffix)
+        return '%s%s%s%s%s' % (prefix, markup_prefix, text, markup_suffix, suffix)
     return implementation
 
 
@@ -332,7 +332,7 @@ class MarkdownConverter(object):
     def convert_li(self, el, text, convert_as_inline):
         parent = el.parent
         if parent is not None and parent.name == 'ol':
-            if parent.get("start"):
+            if parent.get("start") and str(parent.get("start")).isnumeric():
                 start = int(parent.get("start"))
             else:
                 start = 1
@@ -394,13 +394,13 @@ class MarkdownConverter(object):
 
     def convert_td(self, el, text, convert_as_inline):
         colspan = 1
-        if 'colspan' in el.attrs:
+        if 'colspan' in el.attrs and el['colspan'].isdigit():
             colspan = int(el['colspan'])
         return ' ' + text.strip().replace("\n", " ") + ' |' * colspan
 
     def convert_th(self, el, text, convert_as_inline):
         colspan = 1
-        if 'colspan' in el.attrs:
+        if 'colspan' in el.attrs and el['colspan'].isdigit():
             colspan = int(el['colspan'])
         return ' ' + text.strip().replace("\n", " ") + ' |' * colspan
 
@@ -417,7 +417,7 @@ class MarkdownConverter(object):
             # first row and is headline: print headline underline
             full_colspan = 0
             for cell in cells:
-                if "colspan" in cell.attrs:
+                if 'colspan' in cell.attrs and cell['colspan'].isdigit():
                     full_colspan += int(cell["colspan"])
                 else:
                     full_colspan += 1
