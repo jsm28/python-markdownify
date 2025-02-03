@@ -139,10 +139,23 @@ keep_inline_images_in
   that should be allowed to contain inline images, for example ``['td']``.
   Defaults to an empty list.
 
+table_infer_header
+  Controls handling of tables with no header row (as indicated by ``<thead>``
+  or ``<th>``). When set to ``True``, the first body row is used as the header row.
+  Defaults to ``False``, which leaves the header row empty.
+
 wrap, wrap_width
   If ``wrap`` is set to ``True``, all text paragraphs are wrapped at
   ``wrap_width`` characters. Defaults to ``False`` and ``80``.
   Use with ``newline_style=BACKSLASH`` to keep line breaks in paragraphs.
+  A `wrap_width` value of `None` reflows lines to unlimited line length.
+
+strip_document
+  Controls whether leading and/or trailing separation newlines are removed from
+  the final converted document. Supported values are ``LSTRIP`` (leading),
+  ``RSTRIP`` (trailing), ``STRIP`` (both), and ``None`` (neither). Newlines
+  within the document are unaffected.
+  Defaults to ``STRIP``.
 
 Options may be specified as kwargs to the ``markdownify`` function, or as a
 nested ``Options`` class in ``MarkdownConverter`` subclasses.
