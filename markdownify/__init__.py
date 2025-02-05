@@ -1,4 +1,4 @@
-from bs4 import BeautifulSoup, NavigableString, Comment, Doctype
+from bs4 import BeautifulSoup, Comment, Doctype, NavigableString, Tag
 from textwrap import fill
 import re
 import six
@@ -79,6 +79,7 @@ def should_remove_whitespace_inside(el):
     if html_heading_re.match(el.name) is not None:
         return True
     return el.name in ('p', 'blockquote',
+                       'article', 'div', 'section',
                        'ol', 'ul', 'li',
                        'table', 'thead', 'tbody', 'tfoot',
                        'tr', 'td', 'th')
@@ -87,6 +88,41 @@ def should_remove_whitespace_inside(el):
 def should_remove_whitespace_outside(el):
     """Return to remove whitespace immediately outside a block-level element."""
     return should_remove_whitespace_inside(el) or (el and el.name == 'pre')
+
+
+def _is_block_content_element(el):
+    """
+    In a block context, returns:
+
+    - True for content elements (tags and non-whitespace text)
+    - False for non-content elements (whitespace text, comments, doctypes)
+    """
+    if isinstance(el, Tag):
+        return True
+    elif isinstance(el, (Comment, Doctype)):
+        return False  # (subclasses of NavigableString, must test first)
+    elif isinstance(el, NavigableString):
+        return el.strip() != ''
+    else:
+        return False
+
+
+def _prev_block_content_sibling(el):
+    """Returns the first previous sibling that is a content element, else None."""
+    while el is not None:
+        el = el.previous_sibling
+        if _is_block_content_element(el):
+            return el
+    return None
+
+
+def _next_block_content_sibling(el):
+    """Returns the first next sibling that is a content element, else None."""
+    while el is not None:
+        el = el.next_sibling
+        if _is_block_content_element(el):
+            return el
+    return None
 
 
 class MarkdownConverter(object):
@@ -135,38 +171,46 @@ class MarkdownConverter(object):
     def process_tag(self, node, convert_as_inline):
         text = ''
 
-        # markdown headings or cells can't include
-        # block elements (elements w/newlines)
-        isHeading = html_heading_re.match(node.name) is not None
-        isCell = node.name in ['td', 'th']
-        convert_children_as_inline = convert_as_inline
+        # For Markdown headings and table cells, convert children as inline
+        # (so that block element children do not produce newlines).
+        convert_children_as_inline = (
+            convert_as_inline  # propagated from parent
+            or html_heading_re.match(node.name) is not None  # headings
+            or node.name in ['td', 'th']  # table cells
+        )
 
-        if isHeading or isCell:
-            convert_children_as_inline = True
-
-        # Remove whitespace-only textnodes just before, after or
-        # inside block-level elements.
+        # Collect child elements to process, ignoring whitespace-only text elements
+        # adjacent to the inner/outer boundaries of block elements.
         should_remove_inside = should_remove_whitespace_inside(node)
-        for el in node.children:
-            # Only extract (remove) whitespace-only text node if any of the
-            # conditions is true:
-            # - el is the first element in its parent (block-level)
-            # - el is the last element in its parent (block-level)
-            # - el is adjacent to a block-level node
-            can_extract = (should_remove_inside and (not el.previous_sibling
-                                                     or not el.next_sibling)
-                           or should_remove_whitespace_outside(el.previous_sibling)
-                           or should_remove_whitespace_outside(el.next_sibling))
-            if (isinstance(el, NavigableString)
-                    and six.text_type(el).strip() == ''
-                    and can_extract):
-                el.extract()
+
+        def _can_ignore(el):
+            if isinstance(el, Tag):
+                # Tags are always processed.
+                return False
+            elif isinstance(el, (Comment, Doctype)):
+                # Comment and Doctype elements are always ignored.
+                # (subclasses of NavigableString, must test first)
+                return True
+            elif isinstance(el, NavigableString):
+                if six.text_type(el).strip() != '':
+                    # Non-whitespace text nodes are always processed.
+                    return False
+                elif should_remove_inside and (not el.previous_sibling or not el.next_sibling):
+                    # Inside block elements (excluding <pre>), ignore adjacent whitespace elements.
+                    return True
+                elif should_remove_whitespace_outside(el.previous_sibling) or should_remove_whitespace_outside(el.next_sibling):
+                    # Outside block elements (including <pre>), ignore adjacent whitespace elements.
+                    return True
+                else:
+                    return False
+            else:
+                raise ValueError('Unexpected element type: %s' % type(el))
+
+        children_to_convert = [child for child in node.children if not _can_ignore(child)]
 
         # Convert the children first
-        for el in node.children:
-            if isinstance(el, Comment) or isinstance(el, Doctype):
-                continue
-            elif isinstance(el, NavigableString):
+        for el in children_to_convert:
+            if isinstance(el, NavigableString):
                 text += self.process_text(el)
             else:
                 text_strip = text.rstrip('\n')
@@ -338,6 +382,16 @@ class MarkdownConverter(object):
 
     convert_del = abstract_inline_conversion(lambda self: '~~')
 
+    def convert_div(self, el, text, convert_as_inline):
+        if convert_as_inline:
+            return ' ' + text.strip() + ' '
+        text = text.strip()
+        return '\n\n%s\n\n' % text if text else ''
+
+    convert_article = convert_div
+
+    convert_section = convert_div
+
     convert_em = abstract_inline_conversion(lambda self: self.options['strong_em_symbol'])
 
     convert_kbd = convert_code
@@ -416,7 +470,8 @@ class MarkdownConverter(object):
 
         nested = False
         before_paragraph = False
-        if el.next_sibling and el.next_sibling.name not in ['ul', 'ol']:
+        next_sibling = _next_block_content_sibling(el)
+        if next_sibling and next_sibling.name not in ['ul', 'ol']:
             before_paragraph = True
         while el:
             if el.name == 'li':
@@ -444,7 +499,7 @@ class MarkdownConverter(object):
                 start = int(parent.get("start"))
             else:
                 start = 1
-            bullet = '%s.' % (start + parent.index(el))
+            bullet = '%s.' % (start + len(el.find_previous_siblings('li')))
         else:
             depth = -1
             while el:
@@ -540,6 +595,7 @@ class MarkdownConverter(object):
 
     def convert_tr(self, el, text, convert_as_inline):
         cells = el.find_all(['td', 'th'])
+        is_first_row = el.find_previous_sibling() is None
         is_headrow = (
             all([cell.name == 'th' for cell in cells])
             or (el.parent.name == 'thead'
@@ -547,15 +603,15 @@ class MarkdownConverter(object):
                 and len(el.parent.find_all('tr')) == 1)
         )
         is_head_row_missing = (
-            (not el.previous_sibling and not el.parent.name == 'tbody')
-            or (not el.previous_sibling and el.parent.name == 'tbody' and len(el.parent.parent.find_all(['thead'])) < 1)
+            (is_first_row and not el.parent.name == 'tbody')
+            or (is_first_row and el.parent.name == 'tbody' and len(el.parent.parent.find_all(['thead'])) < 1)
         )
         overline = ''
         underline = ''
         if ((is_headrow
              or (is_head_row_missing
                  and self.options['table_infer_header']))
-                and not el.previous_sibling):
+                and is_first_row):
             # first row and:
             # - is headline or
             # - headline is missing and header inference is enabled
@@ -569,10 +625,10 @@ class MarkdownConverter(object):
             underline += '| ' + ' | '.join(['---'] * full_colspan) + ' |' + '\n'
         elif ((is_head_row_missing
                and not self.options['table_infer_header'])
-              or (not el.previous_sibling
+              or (is_first_row
                   and (el.parent.name == 'table'
                        or (el.parent.name == 'tbody'
-                           and not el.parent.previous_sibling)))):
+                           and not el.parent.find_previous_sibling())))):
             # headline is missing and header inference is disabled or:
             # first row, not headline, and:
             #  - the parent is table or
